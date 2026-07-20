@@ -1,0 +1,8 @@
+{
+  "python.analysis.extraPaths": [
+    "./freenove-kit/Code/Server"
+  ],
+  "python.autoComplete.extraPaths": [
+    "./freenove-kit/Code/Server"
+  ]
+}

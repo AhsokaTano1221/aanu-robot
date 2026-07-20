@@ -1,0 +1,4 @@
+search_path = [
+  ".",
+  "freenove-kit/Code/Server"
+]
