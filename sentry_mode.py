@@ -2,6 +2,9 @@ import time
 import sys
 import os
 import threading
+import subprocess
+import json
+import boto3
 
 # Add path to hardware libraries
 project_dir = os.path.dirname(os.path.abspath(__file__))
@@ -10,6 +13,92 @@ if os.path.exists(local_path):
     sys.path.insert(0, local_path)
 else:
     sys.path.insert(0, '/home/eera/robot/freenove-kit/Code/Server')
+
+try:
+    from dotenv import load_dotenv
+    dotenv_path = os.path.join(project_dir, '.env')
+    load_dotenv(dotenv_path)
+except ImportError:
+    pass
+
+def speak(text: str):
+    """Speaks the given text using the system's text-to-speech tool in a non-blocking background process."""
+    if not text:
+        return
+    print(f"🔊 Speaking: \"{text}\"")
+    try:
+        if sys.platform == "darwin":
+            # On macOS, use the native 'say' command
+            subprocess.Popen(["say", text])
+        else:
+            # On Linux (Raspberry Pi), use 'espeak'
+            subprocess.Popen(
+                ["espeak", "-s", "150", "-a", "200", "-p", "40", text],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+    except Exception as e:
+        print(f"⚠️ Error running text-to-speech: {e}")
+
+def generate_threat_response(personality: str, distance_cm: float) -> str:
+    """Queries Amazon Bedrock to generate a threat response based on personality and distance.
+    Falls back to local responses if the API call fails.
+    """
+    fallbacks = {
+        "aggressive": "Intruder detected! Step back immediately or face consequences.",
+        "polite": "Excuse me, you are trespassing in a restricted area. Please leave.",
+        "paranoid": "Ah! A human! Don't look at me, stay away!",
+        "snarky": "Oh look, another intruder. How original. Please leave before I get bored.",
+        "cute": "Hello human! You are not supposed to be here, please go away.",
+    }
+    
+    try:
+        # Create Bedrock Runtime client
+        bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+        
+        system_prompt = (
+            f"You are a sentry robot. You have detected a human intruder's face at a distance of {distance_cm}cm. "
+            f"Your current personality mode is: {personality}. "
+            "Generate a short, menacing, humorous, or alert response matching your personality (1-2 sentences max). "
+            "Speak directly to the intruder. Do not include any meta-text, introductions, markdown, or quotes. "
+            "Only output the spoken text."
+        )
+        
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 100,
+            "system": system_prompt,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "React to the intruder."
+                }
+            ],
+            "temperature": 0.7,
+        })
+        
+        response = bedrock.invoke_model(
+            modelId='anthropic.claude-3-haiku-20240307-v1:0',
+            body=body
+        )
+        
+        response_body = json.loads(response.get('body').read())
+        text = response_body['content'][0]['text'].strip()
+        # Clean quotes if any are returned
+        text = text.replace('"', '').replace("'", "")
+        return text
+    except Exception as e:
+        print(f"\n⚠️ Bedrock API call failed ({e}). Using offline fallback response.")
+        # Try to get matching fallback, otherwise construct a generic one with distance
+        p_lower = personality.lower()
+        if p_lower in fallbacks:
+            return fallbacks[p_lower]
+        return f"Intruder detected at {distance_cm} centimeters! Please step away."
+
+def generate_and_speak(personality: str, distance_cm: float):
+    """Generates the speech response and speaks it in the background to avoid blocking the main thread."""
+    speech_text = generate_threat_response(personality, distance_cm)
+    speak(speech_text)
 
 # Predefined colors for LED strip
 COLORS = {
@@ -124,7 +213,19 @@ class FaceDetector:
                 return False, 0, None
 
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+            # Enhance image contrast using histogram equalization to improve detection in poor/varying lighting
+            gray = cv2.equalizeHist(gray)
+            
+            # Tune parameters for more sensitive detection:
+            # - scaleFactor=1.1: scans smaller increments of image size scaling for distant/close faces
+            # - minNeighbors=3: less restrictive, catches faces under poorer illumination or angled poses
+            # - minSize=(30, 30): sets a minimum search window size to catch smaller/further faces
+            faces = self.face_cascade.detectMultiScale(
+                gray, 
+                scaleFactor=1.1, 
+                minNeighbors=3, 
+                minSize=(30, 30)
+            )
 
             if len(faces) > 0:
                 print(f"👤 Detected {len(faces)} face(s)!")
@@ -201,10 +302,30 @@ def run_sentry_mode(threshold_cm: float = 30.0):
       - Turn LEDs Blue (Scanning).
       - Capture an image from the camera.
       - Check for a human face.
-      - If face is detected, sound buzzer + flash Red LEDs.
+      - If face is detected, sound buzzer + flash Red LEDs and speak threat response.
       - If no face, flash Yellow briefly and continue.
     """
     detector = FaceDetector()
+    
+    print("\n🤖 Welcome to Sentry Mode!")
+    print("Choose a personality for your sentry robot:")
+    print("  - Aggressive (Threatening & defensive)")
+    print("  - Polite     (Formal & polite)")
+    print("  - Paranoid   (Terrified of humans)")
+    print("  - Snarky     (Sarcastic & bored)")
+    print("  - Cute       (Sweet & friendly)")
+    print("  - Or type any custom personality you want!")
+    
+    try:
+        personality = input("Enter robot personality [default: Snarky]: ").strip()
+        if not personality:
+            personality = "Snarky"
+    except (EOFError, KeyboardInterrupt):
+        personality = "Snarky"
+        print("\nUsing default personality: Snarky")
+        
+    print(f"🧠 Personality set to: '{personality}'\n")
+    
     print(f"🛡️ Sentry Mode activated! Threshold: {threshold_cm} cm. Press Ctrl+C to exit.")
     
     # Indicate armed state (Green LED)
@@ -234,7 +355,19 @@ def run_sentry_mode(threshold_cm: float = 30.0):
                             print(f"🚨 Intruder verified! Face image saved to {face_image_path}")
                         else:
                             print("🚨 Intruder verified!")
+                        
+                        # Generate response and speak in background thread to prevent blocking main alarms
+                        threading.Thread(
+                            target=generate_and_speak,
+                            args=(personality, distance),
+                            daemon=True
+                        ).start()
+                        
                         trigger_alarm(1.0)
+                        
+                        # Cool-down to prevent spamming Bedrock/Speech
+                        print("⏳ Cooldown active for 5 seconds...")
+                        time.sleep(5.0)
                     else:
                         print("🟡 False alarm: No face detected. Warning alert triggered.")
                         set_all_leds('Yellow')
