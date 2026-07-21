@@ -23,3 +23,8 @@ ENV/
 .idea/
 *.swp
 *.swo
+
+# Sentry logs and captured images
+sentry_log.json
+sentry_scan.jpg
+intruder_face_detected.jpg

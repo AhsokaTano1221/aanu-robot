@@ -5,6 +5,7 @@ import threading
 import subprocess
 import json
 import boto3
+from datetime import datetime
 
 # Add path to hardware libraries
 project_dir = os.path.dirname(os.path.abspath(__file__))
@@ -95,10 +96,43 @@ def generate_threat_response(personality: str, distance_cm: float) -> str:
             return fallbacks[p_lower]
         return f"Intruder detected at {distance_cm} centimeters! Please step away."
 
-def generate_and_speak(personality: str, distance_cm: float):
-    """Generates the speech response and speaks it in the background to avoid blocking the main thread."""
+log_lock = threading.Lock()
+
+def log_intrusion(distance_cm: float, photo_name: str, ai_response: str):
+    """Logs the intrusion event details to a local JSON file."""
+    log_file = os.path.join(project_dir, 'sentry_log.json')
+    new_entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "distance_cm": distance_cm,
+        "photo_name": photo_name,
+        "ai_response": ai_response
+    }
+    
+    with log_lock:
+        try:
+            log_data = []
+            if os.path.exists(log_file):
+                try:
+                    with open(log_file, 'r') as f:
+                        log_data = json.load(f)
+                    if not isinstance(log_data, list):
+                        log_data = []
+                except Exception:
+                    log_data = []
+            
+            log_data.append(new_entry)
+            
+            with open(log_file, 'w') as f:
+                json.dump(log_data, f, indent=4)
+            print(f"\n📝 Event logged to {log_file}")
+        except Exception as e:
+            print(f"\n⚠️ Failed to write to log file: {e}")
+
+def generate_and_speak(personality: str, distance_cm: float, photo_name: str):
+    """Generates the speech response, speaks it in the background, and logs the event."""
     speech_text = generate_threat_response(personality, distance_cm)
     speak(speech_text)
+    log_intrusion(distance_cm, photo_name, speech_text)
 
 # Predefined colors for LED strip
 COLORS = {
@@ -359,7 +393,7 @@ def run_sentry_mode(threshold_cm: float = 30.0):
                         # Generate response and speak in background thread to prevent blocking main alarms
                         threading.Thread(
                             target=generate_and_speak,
-                            args=(personality, distance),
+                            args=(personality, distance, face_image_path or capture_filename),
                             daemon=True
                         ).start()
                         
