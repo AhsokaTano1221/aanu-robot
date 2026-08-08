@@ -18,6 +18,7 @@ venv/
 env/
 ENV/
 .env
+aws_credentials
 
 # Editor files (excluding VS Code settings)
 .idea/
@@ -28,3 +29,6 @@ ENV/
 sentry_log.json
 sentry_scan.jpg
 intruder_face_detected.jpg
+chat_history.json
+temp_stream.jpg
+static/logs/
